@@ -114,28 +114,29 @@ def ensure_above_ground(obj):
 
 def setup_camera_for_object(obj, camera, use_orthographic=False):
     """Position and configure the camera to frame the object with a border."""
-    # Calculate bounding box
-    bbox = obj.bound_box
+    # Calculate bounding box in world space so rotations are accounted for
+    bbox = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
     bbox_min = [min([v[i] for v in bbox]) for i in range(3)]
     bbox_max = [max([v[i] for v in bbox]) for i in range(3)]
     bbox_size = [bbox_max[i] - bbox_min[i] for i in range(3)]
     max_dim = max(bbox_size)
 
-    # Frame the object initially
+    # Switch mode before framing so camera_to_view_selected computes
+    # the correct orthographic scale
+    if use_orthographic:
+        camera.data.type = 'ORTHO'
+
+    # Frame the object tightly
     bpy.context.view_layer.update()
     bpy.ops.view3d.camera_to_view_selected()
 
-    # Add border by moving camera back
-    move_distance = max_dim * CAMERA_BORDER_FACTOR
-
-    # Move camera along its local Z-axis (backwards)
-    camera.location += camera.matrix_world.to_quaternion() @ Vector((0, 0, move_distance))
-
-    # Set camera to orthographic mode if requested
+    # Add a border around the object
     if use_orthographic:
-        camera.data.type = 'ORTHO'
-        # Adjust the orthographic scale to fit the object
-        camera.data.ortho_scale = max_dim * (1 + CAMERA_BORDER_FACTOR * 2)
+        camera.data.ortho_scale *= 1 + CAMERA_BORDER_FACTOR
+    else:
+        # Move camera along its local Z-axis (backwards)
+        move_distance = max_dim * CAMERA_BORDER_FACTOR
+        camera.location += camera.matrix_world.to_quaternion() @ Vector((0, 0, move_distance))
 
     bpy.context.view_layer.update()
 
@@ -145,6 +146,7 @@ def configure_render_settings(width, height):
     scene = bpy.context.scene
     scene.render.resolution_x = width
     scene.render.resolution_y = height
+    scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = 'PNG'
 
 
@@ -198,12 +200,13 @@ def main():
         # Ensure the object is above the ground
         ensure_above_ground(obj)
         
+        # Configure render settings before framing the camera, since
+        # camera_to_view_selected depends on the render aspect ratio
+        configure_render_settings(args.width, args.height)
+
         # Configure camera
         camera = bpy.context.scene.camera
         setup_camera_for_object(obj, camera, args.orthographic)
-        
-        # Configure render settings
-        configure_render_settings(args.width, args.height)
         
         # Generate output path
         output_path = get_output_filepath(args.stl_path, args.output_path)
