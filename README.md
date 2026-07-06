@@ -8,7 +8,7 @@ This tool allows you to easily import STL files into Blender, apply materials, s
 
 ## Requirements
 
-* Blender version 4.3 or newer (https://www.blender.org/download/)
+* Blender (https://www.blender.org/download/), tested with 4.3 and 5.x
 * Python: Included with Blender installation (no separate Python installation needed)
 
 ## Usage
@@ -50,6 +50,18 @@ convertstl.cmd model.stl c:\out --material_name PLA
 
 ## Blender Template
 The scene and lighing setup comme from a template file, like the one in this repository. Blender removes unused materials when saving the file. So, if you like to set up your template with multiple materials, you can assign them to a fake user to prevent that behavior. 
+
+## Changelog
+
+### 2026-07-05
+* Verified compatibility with Blender 5.x; `convertstl.cmd` now points to Blender 5.1
+* Fixed camera framing for non-square resolutions (resolution is now set before framing the camera)
+* Camera framing now uses the world-space bounding box, so rotations are taken into account
+* Orthographic mode now lets Blender compute the correct scale instead of estimating it
+* Render resolution percentage is forced to 100% regardless of the template's setting
+
+### 2025-03-09
+* Initial version
 
 ## Contributing
 If you would like to contribute to the project, please feel free to submit issues or pull requests on the GitHub repository. Contributions are welcome for features, bug fixes, documentation, and more.
