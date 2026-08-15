@@ -27,6 +27,7 @@ Run the script from the command line using the following format:
 * `--width`: Render width in pixels (default: 500)
 * `--height`: Render height in pixels (default: 500)
 * `--orthographic`: Use orthographic camera mode instead of perspective
+* `--wireframe`: Replace the solid surface with a tube skeleton running along its edges (including edges hidden inside the model), so internal geometry (e.g. cavities/pockets) becomes visible through the gaps. Overrides `--material_name`. Since STL files are triangle meshes, densely tessellated or curved surfaces will show a correspondingly dense grid of lines.
 
 ## Examples
 
@@ -52,6 +53,9 @@ convertstl.cmd model.stl c:\out --material_name PLA
 The scene and lighing setup comme from a template file, like the one in this repository. Blender removes unused materials when saving the file. So, if you like to set up your template with multiple materials, you can assign them to a fake user to prevent that behavior. 
 
 ## Changelog
+
+### 2026-07-23
+* Added `--wireframe` mode, which applies a Wireframe modifier so internal geometry (e.g. cavities/pockets) is visible through the gaps between edges
 
 ### 2026-07-05
 * Verified compatibility with Blender 5.x; `convertstl.cmd` now points to Blender 5.1

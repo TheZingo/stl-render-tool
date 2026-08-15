@@ -39,6 +39,7 @@ def parse_arguments():
     parser.add_argument('--width', type=int, default=DEFAULT_RESOLUTION, help="Render width in pixels")
     parser.add_argument('--height', type=int, default=DEFAULT_RESOLUTION, help="Render height in pixels")
     parser.add_argument('--orthographic', action='store_true', help="Use orthographic camera mode")
+    parser.add_argument('--wireframe', action='store_true', help="Render as a tube skeleton along the model's edges to reveal internal geometry (e.g. magnet pockets)")
     parser.add_argument('--x_rotation', type=float, default=0.0, help="Rotation angle around X-axis in degrees")
     parser.add_argument('--y_rotation', type=float, default=0.0, help="Rotation angle around Y-axis in degrees")
     parser.add_argument('--z_rotation', type=float, default=0.0, help="Rotation angle around Z-axis in degrees")
@@ -67,9 +68,56 @@ def import_stl(file_path):
     return bpy.context.active_object
 
 
-def prepare_object(obj):
-    """Prepare the object: apply scale and set origin correctly."""
+MIN_ISLAND_SIZE_RATIO = 0.02  # relative to the largest island's extent
+
+
+def remove_small_islands(obj, min_relative_size=MIN_ISLAND_SIZE_RATIO):
+    """Delete disconnected mesh fragments that are tiny compared to the
+    main body (e.g. stray slivers left over from STL export/repair tools).
+
+    Left in place, they inflate the bounding box used for camera framing
+    (zooming the camera out to fit a speck no one cares about) and, in
+    wireframe mode, show up as long spurious lines connecting the object
+    to a point far outside its real shape.
+    """
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.mesh.delete_loose()
+    bpy.ops.mesh.separate(type='LOOSE')
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    islands = [o for o in bpy.context.selected_objects if o.type == 'MESH']
+    if len(islands) <= 1:
+        return obj
+
+    def extent(o):
+        bbox = [o.matrix_world @ Vector(corner) for corner in o.bound_box]
+        return max(max(v[i] for v in bbox) - min(v[i] for v in bbox) for i in range(3))
+
+    largest_size = max(extent(o) for o in islands)
+    discard = [o for o in islands if extent(o) < largest_size * min_relative_size]
+    keep = [o for o in islands if o not in discard]
+
+    for o in discard:
+        bpy.data.objects.remove(o, do_unlink=True)
+
+    bpy.ops.object.select_all(action='DESELECT')
+    for o in keep:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = obj if obj in keep else keep[0]
+    if len(keep) > 1:
+        bpy.ops.object.join()
+
+    return bpy.context.view_layer.objects.active
+
+
+def prepare_object(obj):
+    """Prepare the object: clean up geometry, apply scale and set origin correctly."""
+    obj.select_set(True)
+    obj = remove_small_islands(obj)
     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
     bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_VOLUME', center='BOUNDS')
     return obj
@@ -140,6 +188,61 @@ def setup_camera_for_object(obj, camera, use_orthographic=False):
 
     bpy.context.view_layer.update()
 
+    # The template's default near-clip distance can be larger than the
+    # camera distance needed to frame a small object (e.g. a small print),
+    # which would clip the whole object out of the render
+    bbox_center = Vector([(bbox_min[i] + bbox_max[i]) / 2 for i in range(3)])
+    camera_distance = (camera.location - bbox_center).length
+    camera.data.clip_start = min(camera.data.clip_start, max(camera_distance * 0.01, 1e-5))
+
+
+WIREFRAME_THICKNESS_MM = 0.4  # absolute line thickness, independent of overall model size
+WIREFRAME_COLOR = (0.02, 0.02, 0.02, 1.0)
+
+
+def enable_wireframe_mode(obj):
+    """Replace the object's solid faces with a tube skeleton running along
+    its edges, so internal geometry (e.g. magnet pockets) becomes visible
+    through the gaps.
+
+    Note: Blender's Workbench wireframe shading mode only applies to the
+    3D viewport, not to F12/background renders, so it can't be used for a
+    script-driven render. The Wireframe modifier is used instead, which
+    generates real tube geometry along every edge (including edges hidden
+    inside the solid) and renders normally with any engine.
+
+    Line thickness is an absolute physical size (mm) rather than a
+    fraction of the object's bounding box: a model that mixes a large
+    body with small details (e.g. a bracket with a thin standoff) would
+    otherwise get lines sized for the body that swamp the small details.
+    """
+    thickness = WIREFRAME_THICKNESS_MM * IMPORT_SCALE
+
+    modifier = obj.modifiers.new(name="Wireframe", type='WIREFRAME')
+    modifier.thickness = thickness
+    modifier.use_replace = True
+    # "Even Thickness" computes a mitered join at each vertex, which can
+    # numerically blow up into long spikes on complex/acute topology (e.g.
+    # boolean-operation seams), wildly inflating the object's visible
+    # extent. A plain per-edge offset is slightly less uniform at corners
+    # but numerically stable.
+    modifier.use_even_offset = False
+    modifier.use_boundary = True
+
+    material = bpy.data.materials.new("Wireframe_Lines")
+    if material.node_tree is None:
+        # Blender 5.x materials already use nodes by default; setting
+        # use_nodes explicitly there is deprecated (removed in 6.0)
+        material.use_nodes = True
+    material.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = WIREFRAME_COLOR
+
+    # Meshes with internal cavities (e.g. a boolean-cut magnet pocket) can
+    # carry a stray empty material slot from that operation. If we simply
+    # appended our material, faces referencing the empty slot 0 would keep
+    # rendering with Blender's opaque default material instead of ours.
+    obj.data.materials.clear()
+    obj.data.materials.append(material)
+
 
 def configure_render_settings(width, height):
     """Configure render settings."""
@@ -199,7 +302,12 @@ def main():
         
         # Ensure the object is above the ground
         ensure_above_ground(obj)
-        
+
+        # Switch to wireframe mode if requested, so internal geometry
+        # (e.g. magnet pockets) is visible in the render
+        if args.wireframe:
+            enable_wireframe_mode(obj)
+
         # Configure render settings before framing the camera, since
         # camera_to_view_selected depends on the render aspect ratio
         configure_render_settings(args.width, args.height)
